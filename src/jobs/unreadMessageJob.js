@@ -1,34 +1,88 @@
 const cron = require('node-cron');
+const { sendToQueue } = require('../queues/emailQueue');
 const User = require('../models/User');
-const App = require('../models/App');
-const MailTemplate = require('../models/MailTemplate');
-const { addEmailJob } = require('../queues/emailQueue');
 
-function startUnreadMessageJob() {
-  cron.schedule('0 * * * *', async () => {
-    console.log('Okunmamış mesaj jobu başladı');
+async function processUnreadMessageEmails() {
+  try {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    // Gerçek mesaj tablosu yoksa, örnek olarak tüm kullanıcılar üzerinden dönüyoruz
-    const users = await User.find();
-    for (const user of users) {
-      if (user.lastMailSentAt && user.lastMailSentAt >= today) continue;
-      // Burada gerçek unread mesaj kontrolü yapılmalı
-      // if (!hasUnreadMessages(user)) continue;
-      const app = await App.findOne({ appid: user.appid });
-      const template = await MailTemplate.findOne({ category: app.category, type: 'unread_message' });
-      if (!template) continue;
-      await addEmailJob({
-        to: user.email,
-        category: app.category,
-        type: 'unread_message',
-        subject: template.subject,
-        templateVars: { username: user.email.split('@')[0] },
-      }, 'unread_message_email_jobs');
-      user.lastMailSentAt = new Date();
-      await user.save();
+
+    // Tüm kategorileri al
+    const categories = await User.distinct('appCategory');
+    
+    // Her kategori için ayrı işlem yap
+    for (const category of categories) {
+      try {
+        // Bu kategori için toplam işlenecek kullanıcı sayısını hesapla
+        const totalUsersInCategory = await User.countDocuments({
+          appCategory: category,
+          unreadMessageCount: { $gt: 0 },
+          $or: [
+            { lastMailSentAt: { $exists: false } },
+            { lastMailSentAt: { $lt: today } }
+          ]
+        });
+
+        // Her çalışmada işlenecek kullanıcı sayısını hesapla
+        // 15 dakikada bir çalıştığı için günde 96 çalışma olacak
+        const batchSize = Math.ceil(totalUsersInCategory / 96);
+
+        const users = await User.find({
+          appCategory: category,
+          unreadMessageCount: { $gt: 0 },
+          $or: [
+            { lastMailSentAt: { $exists: false } },
+            { lastMailSentAt: { $lt: today } }
+          ]
+        })
+        .sort({ unreadMessageCount: -1 }) // En çok okunmamış mesajı olanlar önce
+        .limit(batchSize);
+
+        // Bu kategorideki kullanıcıları işle
+        for (const user of users) {
+          try {
+            const updated = await User.updateOne(
+              { 
+                _id: user._id,
+                $or: [
+                  { lastMailSentAt: { $exists: false } },
+                  { lastMailSentAt: { $lt: today } }
+                ]
+              },
+              { $set: { lastMailSentAt: new Date() } }
+            );
+            if (updated.nModified === 1 || updated.modifiedCount === 1) {
+              await sendToQueue('unread_message_email_jobs', {
+                to: user.email,
+                subject: 'Okunmamış Mesajlarınız Var',
+                category: user.appCategory,
+                type: 'unread_message',
+                templateVars: {
+                  name: user.name,
+                  appName: user.appName,
+                  unreadCount: user.unreadMessageCount
+                }
+              });
+            }
+          } catch (error) {
+            console.error(`Kullanıcı için kuyruğa ekleme hatası [${user._id}]:`, error);
+          }
+        }
+
+        console.log(`[${category}] İşlenen kullanıcı sayısı: ${users.length}`);
+      } catch (error) {
+        console.error(`Kategori işleme hatası [${category}]:`, error);
+      }
     }
-  });
+  } catch (error) {
+    console.error('Unread message job hatası:', error);
+  }
+}
+
+function startUnreadMessageJob() {
+  // Her 15 dakikada bir çalış
+  cron.schedule('*/15 * * * *', processUnreadMessageEmails);
+  console.log('Unread message job başlatıldı');
 }
 
 module.exports = { startUnreadMessageJob };

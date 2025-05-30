@@ -1,38 +1,60 @@
 const cron = require('node-cron');
+const { sendToQueue } = require('../queues/emailQueue');
 const User = require('../models/User');
-const App = require('../models/App');
-const MailTemplate = require('../models/MailTemplate');
-const SendHourSetting = require('../models/SendHourSetting');
-const { addEmailJob } = require('../queues/emailQueue');
 
-function startMeditationReminderJob() {
-  // Her saat başı çalışır, en verimli saat olup olmadığını kontrol eder
-  cron.schedule('0 * * * *', async () => {
-    const now = new Date();
-    const currentHour = now.getHours();
-    const sendHourSetting = await SendHourSetting.findOne({ category: 'meditation' });
-    if (!sendHourSetting || sendHourSetting.sendHour !== currentHour) return;
-    console.log('Meditasyon hatırlatma jobu (dinamik saat) başladı');
+async function processMeditationReminders() {
+  try {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const users = await User.find();
+    const currentHour = new Date().getHours();
+
+    const users = await User.find({
+      appCategory: 'meditation',
+      $or: [
+        { lastMailSentAt: { $exists: false } },
+        { lastMailSentAt: { $lt: today } }
+      ],
+      preferredReminderHour: currentHour
+    })
+    .limit(1000);
+
     for (const user of users) {
-      if (user.lastMailSentAt && user.lastMailSentAt >= today) continue;
-      const app = await App.findOne({ appid: user.appid });
-      if (!app || app.category !== 'meditation') continue;
-      const template = await MailTemplate.findOne({ category: 'meditation', type: 'reminder' });
-      if (!template) continue;
-      await addEmailJob({
-        to: user.email,
-        category: 'meditation',
-        type: 'reminder',
-        subject: template.subject,
-        templateVars: { username: user.email.split('@')[0], userId: user._id },
-      }, 'meditation_email_jobs');
-      user.lastMailSentAt = new Date();
-      await user.save();
+      try {
+        const updated = await User.updateOne(
+          { 
+            _id: user._id,
+            $or: [
+              { lastMailSentAt: { $exists: false } },
+              { lastMailSentAt: { $lt: today } }
+            ]
+          },
+          { $set: { lastMailSentAt: new Date() } }
+        );
+        if (updated.nModified === 1 || updated.modifiedCount === 1) {
+          await sendToQueue('meditation_email_jobs', {
+            to: user.email,
+            subject: 'Meditasyon Zamanı!',
+            category: 'meditation',
+            type: 'reminder',
+            templateVars: {
+              name: user.name,
+              appName: user.appName
+            }
+          });
+        }
+      } catch (error) {
+        console.error(`Kullanıcı için kuyruğa ekleme hatası [${user._id}]:`, error);
+      }
     }
-  });
+  } catch (error) {
+    console.error('Meditation reminder job hatası:', error);
+  }
+}
+
+function startMeditationReminderJob() {
+  // Her saat başı çalış
+  cron.schedule('0 * * * *', processMeditationReminders);
+  console.log('Meditation reminder job başlatıldı');
 }
 
 module.exports = { startMeditationReminderJob };
