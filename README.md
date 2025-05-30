@@ -82,11 +82,4 @@
 
 
 
-MONGODB_URI=mongodb+srv://batuhanmuzafferoglu:Batu5553845635.@cluster0.tfyiq.mongodb.net/email_microservice?retryWrites=true&w=majority&appName=Cluster0
-PORT=3000
-SMTP_HOST=smtp.example.com
-SMTP_PORT=587
-SMTP_USER=your_smtp_user
-SMTP_PASS=your_smtp_pass
-MAIL_FROM=no-reply@example.com
-RABBITMQ_URL=amqp://localhost
+
