@@ -46,7 +46,7 @@ async function processMatchEmails() {
             templateVars: {
               name: user1.name,
               matchName: user2.name,
-              appName: user1.appName
+              appid: user1.appid
             }
           }),
           sendToQueue('match_email_jobs', {
@@ -57,7 +57,7 @@ async function processMatchEmails() {
             templateVars: {
               name: user2.name,
               matchName: user1.name,
-              appName: user2.appName
+              appid: user2.appid
             }
           })
         ]);

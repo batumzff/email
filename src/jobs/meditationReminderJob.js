@@ -78,7 +78,7 @@ async function processMeditationReminders() {
             type: 'reminder',
             templateVars: {
               name: user.name,
-              appName: user.appName
+              appid: user.appid
             }
           });
         }

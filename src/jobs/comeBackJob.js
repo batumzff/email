@@ -61,7 +61,7 @@ async function processComeBackEmails() {
                 type: 'come_back',
                 templateVars: {
                   name: user.name,
-                  appName: user.appName,
+                  appid: user.appid,
                   daysSinceLastLogin: 30
                 }
               });

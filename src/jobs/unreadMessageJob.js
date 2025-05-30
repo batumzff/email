@@ -59,7 +59,7 @@ async function processUnreadMessageEmails() {
                 type: 'unread_message',
                 templateVars: {
                   name: user.name,
-                  appName: user.appName,
+                  appid: user.appid,
                   unreadCount: user.unreadMessageCount
                 }
               });
