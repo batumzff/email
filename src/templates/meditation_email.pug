@@ -1,11 +1,7 @@
-doctype html
-html
-  head
-    meta(charset="UTF-8")
-    title= subject
-  body
-    h2= subject
-    p Merhaba #{username},
-    p Bugün için kısa bir meditasyon zamanı ayırmayı unutma. Zihnini dinlendir!
-    p(style="font-size:12px;color:#888;") Bu e-posta ZenMind uygulamasından gönderilmiştir.
-    img(src=`https://yourdomain.com/email/opened?userId=${userId}&category=meditation` width='1' height='1' style='display:none;')
+include ./partials/header.pug
+
+p Merhaba #{username},
+p Bugün için kısa bir meditasyon zamanı ayırmayı unutma. Zihnini dinlendir!
+img(src=`https://yourdomain.com/email/opened?userId=${userId}&category=meditation` width='1' height='1' style='display:none;')
+
+include ./partials/footer.pug

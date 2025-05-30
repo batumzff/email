@@ -1,0 +1,16 @@
+doctype html
+html
+  head
+    meta(charset="UTF-8")
+    meta(name="viewport" content="width=device-width, initial-scale=1.0")
+    title= subject
+    style.
+      body { font-family: Arial, sans-serif; background: #f9f9f9; margin: 0; padding: 0; }
+      .email-container { background: #fff; max-width: 600px; margin: 30px auto; border-radius: 8px; box-shadow: 0 2px 8px #eee; padding: 32px; }
+      .email-header { border-bottom: 1px solid #eee; padding-bottom: 16px; margin-bottom: 24px; }
+      .email-title { color: #2d3e50; font-size: 24px; margin: 0; }
+  body
+    .email-container
+      .email-header
+        img(src="https://upload.wikimedia.org/wikipedia/commons/4/4e/Mail_%28iOS%29.svg" alt="Mail Logo" width="48" style="vertical-align:middle;margin-right:12px;")
+        span.email-title= subject

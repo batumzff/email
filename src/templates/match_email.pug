@@ -1,10 +1,7 @@
-doctype html
-html
-  head
-    meta(charset="UTF-8")
-    title= subject
-  body
-    h2= subject
-    p Merhaba #{username},
-    p Profilinize uygun biriyle eşleştiniz! Hemen sohbet edin.
-    p(style="font-size:12px;color:#888;") Bu e-posta EliteDating uygulamasından gönderilmiştir.
+include ./partials/header.pug
+
+p Merhaba #{username},
+p Profilinize uygun biriyle eşleştiniz! Hemen sohbet edin.
+p(style="font-size:12px;color:#888;") Bu e-posta EliteDating uygulamasından gönderilmiştir.
+
+include ./partials/footer.pug

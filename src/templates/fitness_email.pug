@@ -1,10 +1,6 @@
-doctype html
-html
-  head
-    meta(charset="UTF-8")
-    title= subject
-  body
-    h2= subject
-    p Merhaba #{username},
-    p Bugün hedeflerine ulaşmak için bir adım daha at! Egzersizini unutma.
-    p(style="font-size:12px;color:#888;") Bu e-posta FitTrack uygulamasından gönderilmiştir.
+include ./partials/header.pug
+
+p Merhaba #{username},
+p Bugün hedeflerine ulaşmak için bir adım daha at! Egzersizini unutma.
+
+include ./partials/footer.pug
