@@ -1,0 +1,20 @@
+extends base
+
+block content
+  p Merhaba #{name},
+  p 
+    | #{unreadCount} adet okunmamış mesajınız var. 
+    | Yeni mesajlarınızı okumak için hemen uygulamaya giriş yapın!
+  
+  if appCategory === 'match'
+    p Yeni eşleşmeler ve mesajlar sizi bekliyor. Belki de hayatınızın aşkıyla tanışmak üzeresiniz!
+  else if appCategory === 'social'
+    p Arkadaşlarınızdan gelen yeni mesajları kaçırmayın. Sosyal çevreniz sizinle iletişim kurmak istiyor!
+
+  .cta-button
+    a(href=`https://app.example.com/${appid}/messages`) Mesajlarımı Görüntüle
+
+  p
+    | Eğer bu e-postayı almak istemiyorsanız, 
+    a(href=`https://app.example.com/${appid}/settings`) ayarlarınızdan
+    |  bildirim tercihlerinizi değiştirebilirsiniz. 
