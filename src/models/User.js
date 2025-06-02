@@ -36,9 +36,9 @@ const userSchema = new mongoose.Schema({
 });
 
 // Indexes
-userSchema.index({ createdAt: 1 });
+userSchema.index({ appCategory: 1, lastMailSentAt: 1 });
+userSchema.index({ createdAt: 1, lastMailSentAt: 1 });
 userSchema.index({ appCategory: 1, unreadMessageCount: 1, lastUnreadMessageAt: 1 });
-userSchema.index({ lastMailSentAt: 1 });
 
 const User = mongoose.model('User', userSchema);
 

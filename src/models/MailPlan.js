@@ -21,7 +21,7 @@ const mailPlanSchema = new mongoose.Schema({
   },
   status: { 
     type: String, 
-    enum: ['pending', 'sent', 'failed'], 
+    enum: ['pending', 'processing', 'sent', 'failed', 'permanently_failed'], 
     default: 'pending' 
   },
   category: { 
@@ -39,6 +39,9 @@ const mailPlanSchema = new mongoose.Schema({
   },
   lastError: {
     type: String
+  },
+  sentAt: {
+    type: Date
   },
   createdAt: { 
     type: Date, 
