@@ -9,6 +9,8 @@ const mongoose = require('mongoose');
 const BATCH_SIZE = 1000;
 const TIME_WINDOW = 30; // 30 dakikalık pencere
 const RETRY_DELAYS = [5, 15, 30]; // Retry için bekleme süreleri (dakika)
+const LOCK_TIMEOUT = 10 * 60 * 1000; // 10 dakika
+const LOCK_REFRESH_INTERVAL = 5 * 60 * 1000; // 5 dakika
 
 // Günün başlangıcını hesapla
 function startOfDay(date) {
@@ -63,13 +65,30 @@ async function updateJobState(lastProcessedTime, isProcessing = false, error = n
   );
 }
 
+// Kilit yenileme fonksiyonu
+async function refreshJobLock() {
+  const result = await JobState.findOneAndUpdate(
+    { 
+      jobName: 'mailSending',
+      isProcessing: true,
+      updatedAt: { $gt: new Date(Date.now() - LOCK_TIMEOUT) }
+    },
+    { 
+      $set: { 
+        updatedAt: new Date()
+      }
+    }
+  );
+  return result !== null;
+}
+
 async function acquireJobLock() {
   const result = await JobState.findOneAndUpdate(
     { 
       jobName: 'mailSending',
       isProcessing: false,
       $or: [
-        { updatedAt: { $lt: new Date(Date.now() - 30 * 60 * 1000) } }, // 30 dakikadan eski
+        { updatedAt: { $lt: new Date(Date.now() - LOCK_TIMEOUT) } }, // 10 dakikadan eski
         { updatedAt: { $exists: false } }
       ]
     },
@@ -139,80 +158,95 @@ async function sendPlannedMails() {
       const failedMails = [];
       const maxRetryMails = [];
 
-      // Tüm mailleri paralel işle
-      await Promise.all(mailsToSend.map(async (mail) => {
-        try {
-          // Race condition'ı önlemek için atomik işlem
-          const updatedUser = await checkAndUpdateUserMailPermission(mail.userId, now);
-          
-          if (!updatedUser) {
-            console.log(`[Mail Sending] Kullanıcıya bugün zaten mail gönderilmiş [${mail.userId}]`);
-            return;
-          }
+      // Batch işleme
+      const BATCH_SIZE = 100;
+      for (let i = 0; i < mailsToSend.length; i += BATCH_SIZE) {
+        const batch = mailsToSend.slice(i, i + BATCH_SIZE);
+        
+        // Her batch öncesi kilidi yenile
+        await refreshJobLock();
+        
+        // Batch'i işle
+        await Promise.all(batch.map(async (mail) => {
+          try {
+            // Race condition'ı önlemek için atomik işlem
+            const updatedUser = await checkAndUpdateUserMailPermission(mail.userId, now);
+            
+            if (!updatedUser) {
+              console.log(`[Mail Sending] Kullanıcıya bugün zaten mail gönderilmiş [${mail.userId}]`);
+              return;
+            }
 
-          // Maili processing durumuna al
-          const updated = await MailPlan.findOneAndUpdate(
-            { 
-              _id: mail._id,
-              status: 'pending'
-            },
-            { 
-              $set: { 
-                status: 'processing',
-                processingStartedAt: now
+            // Maili processing durumuna al
+            const updated = await MailPlan.findOneAndUpdate(
+              { 
+                _id: mail._id,
+                status: 'pending'
+              },
+              { 
+                $set: { 
+                  status: 'processing',
+                  processingStartedAt: now
+                }
               }
+            );
+
+            if (!updated) {
+              console.log(`[Mail Sending] Mail zaten işleniyor [${mail._id}]`);
+              return;
             }
-          );
 
-          if (!updated) {
-            console.log(`[Mail Sending] Mail zaten işleniyor [${mail._id}]`);
-            return;
-          }
-
-          await retry(async () => {
-            await sendToQueue('email_jobs', {
-              to: mail.email,
-              category: mail.category,
-              type: mail.mailType,
-              templateVars: mail.templateVars,
-              userId: mail.userId,
-              mailId: mail._id
+            await retry(async () => {
+              await sendToQueue('email_jobs', {
+                to: mail.email,
+                category: mail.category,
+                type: mail.mailType,
+                templateVars: mail.templateVars,
+                userId: mail.userId,
+                mailId: mail._id
+              });
+            }, {
+              maxAttempts: 3,
+              initialDelay: 1000,
+              onRetry: (error, attempt) => {
+                console.log(`Mail gönderme hatası [${mail._id}] (Deneme ${attempt}/3): ${error.message}`);
+              }
             });
-          }, {
-            maxAttempts: 3,
-            initialDelay: 1000,
-            onRetry: (error, attempt) => {
-              console.log(`Mail gönderme hatası [${mail._id}] (Deneme ${attempt}/3): ${error.message}`);
+
+            successfulMails.push(mail._id);
+            console.log(`[Mail Sending] Mail queue'ya eklendi [${mail._id}] - ${mail.email} - ${mail.mailType}`);
+          } catch (error) {
+            // Hata durumunda retry planla
+            const retryCount = mail.retryCount || 0;
+            if (retryCount < RETRY_DELAYS.length) {
+              const retryDelay = RETRY_DELAYS[retryCount];
+              const retryTime = new Date(now.getTime() + retryDelay * 60000);
+
+              failedMails.push({
+                _id: mail._id,
+                retryTime,
+                retryCount: retryCount + 1,
+                error: error.message
+              });
+
+              console.log(`[Mail Sending] Mail tekrar planlandı [${mail._id}] - ${mail.email} - ${retryDelay} dk sonra - Hata: ${error.message}`);
+            } else {
+              maxRetryMails.push({
+                _id: mail._id,
+                error: `Maksimum retry sayısına ulaşıldı: ${error.message}`
+              });
+
+              console.error(`[Mail Sending] Mail gönderim hatası [${mail._id}] - ${mail.email} - ${error.message}`);
             }
-          });
-
-          successfulMails.push(mail._id);
-          console.log(`[Mail Sending] Mail queue'ya eklendi [${mail._id}] - ${mail.email} - ${mail.mailType}`);
-        } catch (error) {
-          // Hata durumunda retry planla
-          const retryCount = mail.retryCount || 0;
-          if (retryCount < RETRY_DELAYS.length) {
-            const retryDelay = RETRY_DELAYS[retryCount];
-            const retryTime = new Date(now.getTime() + retryDelay * 60000);
-
-            failedMails.push({
-              _id: mail._id,
-              retryTime,
-              retryCount: retryCount + 1,
-              error: error.message
-            });
-
-            console.log(`[Mail Sending] Mail tekrar planlandı [${mail._id}] - ${mail.email} - ${retryDelay} dk sonra - Hata: ${error.message}`);
-          } else {
-            maxRetryMails.push({
-              _id: mail._id,
-              error: `Maksimum retry sayısına ulaşıldı: ${error.message}`
-            });
-
-            console.error(`[Mail Sending] Mail gönderim hatası [${mail._id}] - ${mail.email} - ${error.message}`);
           }
+        }));
+
+        // Batch sonrası ilerleme durumunu güncelle
+        if (batch.length > 0) {
+          const lastProcessedTime = new Date(Math.max(...batch.map(m => m.plannedSendTime)));
+          await updateJobState(lastProcessedTime, true);
         }
-      }));
+      }
 
       // Toplu güncellemeler
       if (successfulMails.length > 0) {
