@@ -2,6 +2,11 @@ require('dotenv').config();
 const express = require('express');
 const connectDB = require('./config/db');
 const OpenedMail = require('./models/OpenedMail');
+const mongoose = require('mongoose');
+const cors = require('cors');
+const { mailPlanningJob } = require('./jobs/mailPlanningJob');
+const { mailSendingJob } = require('./jobs/mailSendingJob');
+const { analyzeMailOpenTimesJob } = require('./jobs/analyzeMailOpenTimesJob');
 
 const app = express();
 app.use(express.json());
@@ -30,17 +35,18 @@ app.get('/email/opened', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 
-connectDB().then(() => {
+connectDB().then(async () => {
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
   });
-  // Tüm job'ları başlat
-  require('./jobs/welcomeJob').startWelcomeJob();
-  require('./jobs/comeBackJob').startComeBackJob();
-  require('./jobs/matchJob').startMatchJob();
-  require('./jobs/meditationReminderJob').startMeditationReminderJob();
-  require('./jobs/unreadMessageJob').startUnreadMessageJob();
-  require('./jobs/analyzeMeditationOpenTimesJob').startAnalyzeMeditationOpenTimesJob();
+  
+  // Önce analiz job'unu başlat ve tamamlanmasını bekle
+  await analyzeMailOpenTimesJob.start();
+  
+  // Analiz tamamlandıktan sonra diğer job'ları başlat
+  mailPlanningJob.start();
+  mailSendingJob.start();
+  
   // Email consumer başlat
   const { startEmailConsumer } = require('./queues/emailConsumer');
   startEmailConsumer('welcome_email_jobs');
