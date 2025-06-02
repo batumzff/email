@@ -1,8 +1,14 @@
 const amqp = require('amqplib');
+const { retryRabbitMQConnection } = require('../utils/retry');
 
 async function sendToQueue(queueName, data) {
-  const connection = await amqp.connect(process.env.RABBITMQ_URL);
-  const channel = await connection.createChannel();
+  const connectWithRetry = async () => {
+    const connection = await amqp.connect(process.env.RABBITMQ_URL);
+    const channel = await connection.createChannel();
+    return { connection, channel };
+  };
+
+  const { connection, channel } = await retryRabbitMQConnection(connectWithRetry);
   
   try {
     // Ana kuyruğu oluştur

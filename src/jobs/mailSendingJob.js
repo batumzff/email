@@ -1,23 +1,63 @@
 const cron = require('node-cron');
 const { sendToQueue } = require('../queues/emailQueue');
 const MailPlan = require('../models/MailPlan');
+const JobState = require('../models/JobState');
+const { retryMongoDBOperation, retry } = require('../utils/retry');
 
 const BATCH_SIZE = 1000;
 const TIME_WINDOW = 30; // 30 dakikalık pencere
 const RETRY_DELAYS = [5, 15, 30]; // Retry için bekleme süreleri (dakika)
 
-// Son işlenen zamanı tut
-let lastProcessedTime = null;
+async function getJobState() {
+  const state = await JobState.findOneAndUpdate(
+    { jobName: 'mailSending' },
+    { 
+      $setOnInsert: { 
+        jobName: 'mailSending',
+        lastProcessedTime: new Date(0)
+      }
+    },
+    { 
+      upsert: true,
+      new: true
+    }
+  );
+  return state;
+}
 
-async function getMailSubject(mailType, templateVars) {
-  const subjects = {
-    welcome: 'Hoş Geldiniz!',
-    unread_message: `${templateVars.unreadCount} Okunmamış Mesajınız Var!`,
-    match: 'Yeni Eşleşmeniz Var!',
-    come_back: 'Sizi Özledik!',
-    meditation_reminder: 'Meditasyon Zamanı!'
-  };
-  return subjects[mailType] || 'Bildirim';
+async function updateJobState(lastProcessedTime, isProcessing = false, error = null) {
+  await JobState.updateMany(
+    { jobName: 'mailSending' },
+    { 
+      $set: { 
+        lastProcessedTime,
+        isProcessing,
+        lastError: error,
+        updatedAt: new Date()
+      }
+    }
+  );
+}
+
+async function acquireJobLock() {
+  const result = await JobState.findOneAndUpdate(
+    { 
+      jobName: 'mailSending',
+      isProcessing: false,
+      $or: [
+        { updatedAt: { $lt: new Date(Date.now() - 30 * 60 * 1000) } }, // 30 dakikadan eski
+        { updatedAt: { $exists: false } }
+      ]
+    },
+    { 
+      $set: { 
+        isProcessing: true,
+        updatedAt: new Date()
+      }
+    },
+    { new: true }
+  );
+  return result !== null;
 }
 
 async function sendPlannedMails() {
@@ -25,24 +65,47 @@ async function sendPlannedMails() {
   console.log(`[Mail Sending] Job başladı - ${jobStartTime.toISOString()}`);
 
   try {
-    const now = new Date();
-    const windowStart = new Date(now.getTime() - (TIME_WINDOW/2) * 60000); // 15 dk öncesi
-    const windowEnd = new Date(now.getTime() + (TIME_WINDOW/2) * 60000);   // 15 dk sonrası
+    // Job state'i kontrol et
+    const jobState = await getJobState();
+    if (jobState.isProcessing) {
+      console.log('[Mail Sending] Job zaten çalışıyor, atlanıyor...');
+      return;
+    }
 
-    // Eğer son işlenen zaman varsa, ondan sonraki mailleri al
-    const queryStart = lastProcessedTime || windowStart;
+    // Job kilidi al
+    const lockAcquired = await acquireJobLock();
+    if (!lockAcquired) {
+      console.log('[Mail Sending] Job kilidi alınamadı, atlanıyor...');
+      return;
+    }
+
+    // Job'ı işleniyor olarak işaretle
+    await updateJobState(jobState.lastProcessedTime, true);
+
+    const now = new Date();
+    const windowStart = new Date(now.getTime() - TIME_WINDOW * 60000);
+    const windowEnd = now;
+
+    // Son işlenen zamandan sonraki mailleri al
+    const queryStart = new Date(Math.max(
+      jobState.lastProcessedTime.getTime(),
+      windowStart.getTime()
+    ));
+
     console.log(`[Mail Sending] Zaman penceresi: ${queryStart.toISOString()} - ${windowEnd.toISOString()}`);
 
     // 30 dakikalık pencere içindeki mailleri bul
-    const mailsToSend = await MailPlan.find({
-      status: 'pending',
-      plannedSendTime: { 
-        $gte: queryStart,
-        $lte: windowEnd
-      }
-    })
-    .limit(BATCH_SIZE)
-    .lean();
+    const mailsToSend = await retryMongoDBOperation(async () => {
+      return MailPlan.find({
+        status: 'pending',
+        plannedSendTime: { 
+          $gte: queryStart,
+          $lte: windowEnd
+        }
+      })
+      .limit(BATCH_SIZE)
+      .lean();
+    });
 
     if (mailsToSend.length > 0) {
       console.log(`[Mail Sending] ${mailsToSend.length} mail gönderilecek`);
@@ -55,14 +118,19 @@ async function sendPlannedMails() {
       // Tüm mailleri paralel işle
       await Promise.all(mailsToSend.map(async (mail) => {
         try {
-          const subject = await getMailSubject(mail.mailType, mail.templateVars);
-
-          await sendToQueue('email_jobs', {
-            to: mail.email,
-            subject: subject,
-            category: mail.category,
-            type: mail.mailType,
-            templateVars: mail.templateVars
+          await retry(async () => {
+            await sendToQueue('email_jobs', {
+              to: mail.email,
+              category: mail.category,
+              type: mail.mailType,
+              templateVars: mail.templateVars
+            });
+          }, {
+            maxAttempts: 3,
+            initialDelay: 1000,
+            onRetry: (error, attempt) => {
+              console.log(`Mail gönderme hatası [${mail._id}] (Deneme ${attempt}/3): ${error.message}`);
+            }
           });
 
           successfulMails.push(mail._id);
@@ -95,54 +163,60 @@ async function sendPlannedMails() {
 
       // Toplu güncellemeler
       if (successfulMails.length > 0) {
-        await MailPlan.updateMany(
-          { _id: { $in: successfulMails } },
-          { $set: { status: 'queued' } }  // Status'u 'queued' olarak güncelle
-        );
+        await retryMongoDBOperation(async () => {
+          await MailPlan.updateMany(
+            { _id: { $in: successfulMails } },
+            { $set: { status: 'queued' } }
+          );
+        });
         console.log(`[Mail Sending] ${successfulMails.length} mail queue'ya eklendi`);
       }
 
       if (failedMails.length > 0) {
-        await MailPlan.updateMany(
-          { _id: { $in: failedMails.map(m => m._id) } },
-          { 
-            $set: { 
-              status: 'failed',
-              lastError: { $each: failedMails.map(m => m.error) },
-              plannedSendTime: { $each: failedMails.map(m => m.retryTime) }
-            },
-            $inc: { retryCount: 1 }
-          }
-        );
+        await retryMongoDBOperation(async () => {
+          await MailPlan.updateMany(
+            { _id: { $in: failedMails.map(m => m._id) } },
+            { 
+              $set: { 
+                status: 'failed',
+                lastError: { $each: failedMails.map(m => m.error) },
+                plannedSendTime: { $each: failedMails.map(m => m.retryTime) }
+              },
+              $inc: { retryCount: 1 }
+            }
+          );
+        });
         console.log(`[Mail Sending] ${failedMails.length} mail tekrar planlandı`);
       }
 
       if (maxRetryMails.length > 0) {
-        await MailPlan.updateMany(
-          { _id: { $in: maxRetryMails.map(m => m._id) } },
-          { 
-            $set: { 
-              status: 'failed',
-              lastError: { $each: maxRetryMails.map(m => m.error) }
+        await retryMongoDBOperation(async () => {
+          await MailPlan.updateMany(
+            { _id: { $in: maxRetryMails.map(m => m._id) } },
+            { 
+              $set: { 
+                status: 'failed',
+                lastError: { $each: maxRetryMails.map(m => m.error) }
+              }
             }
-          }
-        );
+          );
+        });
         console.log(`[Mail Sending] ${maxRetryMails.length} mail maksimum retry sayısına ulaştı`);
       }
     } else {
       console.log('[Mail Sending] Gönderilecek mail bulunamadı');
     }
 
-    // Son işlenen zamanı güncelle
-    lastProcessedTime = windowEnd;
-    console.log(`[Mail Sending] Son işlenen zaman güncellendi: ${lastProcessedTime.toISOString()}`);
-
+    // Job state'i güncelle
+    await updateJobState(windowEnd, false);
+    
     const jobEndTime = new Date();
     const duration = (jobEndTime - jobStartTime) / 1000;
     console.log(`[Mail Sending] Job tamamlandı - ${jobEndTime.toISOString()} - Süre: ${duration} saniye`);
   } catch (error) {
     console.error('[Mail Sending] Hata:', error);
-    // Hata durumunda alert gönder
+    // Hata durumunda job state'i güncelle
+    await updateJobState(jobState.lastProcessedTime, false, error.message);
     // TODO: Alert mekanizması eklenecek
   }
 }
