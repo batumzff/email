@@ -16,7 +16,6 @@
 1. **Mail Plan ve Sending Job Optimizasyonu:**
    - Tüm mail senaryoları tek bir job'da birleştirildi
    - MailPlan modeli ile merkezi mail yönetimi
-   - Batch işleme eklendi (her batch'te 100 mail)
    - MongoDB sorguları optimize edildi (index ve lean queries)
    - Atomic update ile lastMailSentAt güncellemesi
    - Paralel işleme için Promise.all kullanımı
@@ -24,7 +23,6 @@
 
 2. **User Model İyileştirmeleri:**
    - createdAt alanına index eklendi
-   - Gereksiz alanlar temizlendi
    - Schema yapısı sadeleştirildi
 
 3. **RabbitMQ İyileştirmeleri:**
